@@ -11,12 +11,11 @@ import itertools
 import xml.etree.ElementTree as ET
 
 
-
 try:
     from pretty_bad_protocol import gnupg
 except ImportError:
-    print "[x] ERROR: Cannot find python-gnupg. Please install it"
-    exit()
+    print("[x] ERROR: Cannot find 'pretty_bad_protocol'. Please install it: pip install pretty_bad_protocol")
+    sys.exit()
 
 
 WHICH_CMD = 'which'
@@ -694,5 +693,3 @@ if __name__ == "__main__":
 
 
     Password_Manager(filename).run()
-
-
