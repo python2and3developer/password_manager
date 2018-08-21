@@ -1,14 +1,16 @@
 # Password Manager
 Password manager for the terminal using gnugpg.
 
-## Installation
 Python2 is required.
 
+
+## Installation
 ```
     pip install -r requirements.txt
 ```
 
 ## Usage
+```
 password_manager.py [-h] filename
 
 Available commands:
@@ -27,3 +29,4 @@ p               print account and copy password to clipboard
 rename          rename account
 search, s       search account
 show_passwords  show passwords
+```
