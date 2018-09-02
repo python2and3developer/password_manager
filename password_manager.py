@@ -7,8 +7,19 @@ import subprocess
 import platform
 import readline
 import itertools
+import shlex
 
 import xml.etree.ElementTree as ET
+
+
+# TODO
+# - To use pyperclip???
+# - Commands with parameters
+# - Consider these libraries:
+#       https://github.com/italorossi/ishell
+#       https://github.com/jonathanslenders/python-prompt-toolkit
+# Print and ask copy to clipboard
+# Class Account
 
 
 try:
@@ -19,6 +30,8 @@ except ImportError:
 
 
 WHICH_CMD = 'which'
+CLIPBOARD_ENCODING = 'utf-8'
+
 
 def _executable_exists(name):
     return subprocess.call([WHICH_CMD, name],
@@ -67,7 +80,7 @@ class XClip(object):
 
         p = subprocess.Popen(['xclip', '-selection', selection],
                              stdin=subprocess.PIPE, close_fds=True)
-        p.communicate(input=text.encode(ENCODING))
+        p.communicate(input=text.encode(CLIPBOARD_ENCODING))
 
     @classmethod
     def paste(cls, primary=False):
@@ -82,7 +95,7 @@ class XClip(object):
                              close_fds=True)
         stdout, stderr = p.communicate()
         # Intentionally ignore extraneous output on stderr when clipboard is empty
-        return stdout.decode(ENCODING)
+        return stdout.decode(CLIPBOARD_ENCODING)
 
 
 class XSel(object):
@@ -98,7 +111,7 @@ class XSel(object):
 
         p = subprocess.Popen(['xsel', selection_flag, '-i'],
                              stdin=subprocess.PIPE, close_fds=True)
-        p.communicate(input=text.encode(ENCODING))
+        p.communicate(input=text.encode(CLIPBOARD_ENCODING))
 
     @classmethod
     def paste(cls, primary=False):
@@ -110,7 +123,7 @@ class XSel(object):
         p = subprocess.Popen(['xsel', selection_flag, '-o'],
                              stdout=subprocess.PIPE, close_fds=True)
         stdout, stderr = p.communicate()
-        return stdout.decode(ENCODING)
+        return stdout.decode(CLIPBOARD_ENCODING)
 
 
 if _executable_exists("xclip"):
@@ -166,60 +179,9 @@ def encrypt_file(gpg, filename, password, data):
     return True
 
 
-def create_help():
-    HELP_MESSAGE = 'Available commands:\n'
-
-    def key(x):
-        return Password_Manager.LIST_OF_COMMANDS[x]
-
-    commands_help =[]
-    for function_name, command_names in itertools.groupby(sorted(Password_Manager.LIST_OF_COMMANDS.keys(), key=key), key):
-        command_function = Password_Manager.__dict__[function_name]
-
-        command_names = list(command_names)
-        command_names.sort(key=len, reverse=True)
-
-        commands_help.append((command_names, command_function.__doc__.lower()))
-
-    commands_help.sort(key=lambda x: x[0][0])
-
-    for command_names, help_string in commands_help:
-        HELP_MESSAGE += ", ".join(command_names).ljust(16) + help_string + "\n"
-
-    return HELP_MESSAGE
-
-
-
 class Password_Manager(object):
 
     TITLE ="Password Manager"
-    ENCODING = 'utf-8'
-
-    LIST_OF_COMMANDS = {
-        "list": "command_list",
-        "l": "command_list",
-        "all": "command_all",
-        "show_passwords": "command_show_passwords",
-        "hide_passwords": "command_hide_passwords",
-        "search": "command_search",
-        "s": "command_search",
-        "p": "command_print_and_copy_to_cliboard",
-        "add": "command_add",
-        "a": "command_add",
-        "delete": "command_delete",
-        "d": "command_delete",
-        "rename": "command_rename",
-        "modify": "command_modify",
-        "m": "command_modify",
-        "dump": "command_dump",
-        "clipboard": "command_clipboard",
-        "c": "command_clipboard",
-        "clear": "command_clear",
-        "help": "command_help",
-        "h": "command_help",
-        "exit": "command_exit"
-    }
-
 
     def __init__(self, filename):
         self._filename = filename
@@ -232,7 +194,7 @@ class Password_Manager(object):
         self._gpg = gnupg.GPG()
 
 
-    def print_account(self, account, indent="  "):
+    def print_account(self, account, indent="  ", show_password=False):
         extra_info = None
         passwd = None
 
@@ -240,7 +202,7 @@ class Password_Manager(object):
         if account.find('extra_info') is not None and account.find('extra_info').text is not None:
             extra_info = account.find('extra_info').text.encode(sys.stdout.encoding)
 
-        if self._show_passwords and account.find('password') is not None and account.find('password').text is not None:
+        if show_password and account.find('password') is not None and account.find('password').text is not None:
             passwd = account.find('password').text.encode(sys.stdout.encoding)
 
 
@@ -299,7 +261,7 @@ class Password_Manager(object):
 
         new_account = ET.Element("account", {'name': account_name})
 
-        new_password = ask_password(old_password)
+        new_password = self.ask_password(old_password)
 
         if new_password is None:
             new_password = old_password
@@ -409,43 +371,45 @@ class Password_Manager(object):
         list_of_accounts = self.get_accounts()
 
         if list_of_accounts:
-            print_with_indent("List of account names:")
+            print_with_indent("List of account:")
             for account_index, account in enumerate(list_of_accounts):
                 print_with_indent("%d. "%account_index + account.get('name'))
 
         else:
             warn_print("No account")
+    command_list.name = ["list", "l"]
 
 
-    def command_add(self):
+    def command_add(self, account_name=None):
         """Add account"""
 
-        # first, create new node
+        if account_name is None:
+            account_name = raw_input("Account name: ")
+            account_name = account_name.strip()
 
-        account_name = raw_input("Account name: ")
-        account_name = account_name.strip()
-
-        if account_name == "": return
+            if account_name == "": return
 
         self.add_account(account_name)
         info_print("Account added!")
+    command_add.name = ["add", "a"]
 
 
-    def command_delete(self):
+    def command_delete(self, account_pattern=None):
         """Delete account"""
 
-        pattern = raw_input("Write an account pattern: ")
-        pattern = pattern.strip()
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
 
-        if pattern == "": return
+            if account_pattern == "": return
 
-        account = self.find_account(pattern)
+        account = self.find_account(account_pattern)
 
         if account is None:
             raise AccountNotFoundException
         else:
             print("are you sure that you want to delete this account? Answer 'y' to confirm.")
-            self.print_account(account)
+            self.print_account(account, show_password=self._show_passwords)
 
             answer = raw_input()
             answer = answer.strip()
@@ -455,17 +419,19 @@ class Password_Manager(object):
 
                 self.save_accounts()
                 info_print("Account deleted!")
+    command_delete.name = ["delete", "d"]
 
 
-    def command_clipboard(self):
+    def command_clipboard(self, account_pattern=None):
         """Copy password to clipboard"""
 
-        pattern = raw_input("Write an account pattern: ")
-        pattern = pattern.strip()
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
 
-        if pattern == "": return
+            if account_pattern == "": return
 
-        account = self.find_account(pattern)
+        account = self.find_account(account_pattern)
 
         if account is None:
             raise AccountNotFoundException
@@ -474,17 +440,19 @@ class Password_Manager(object):
             clipboard.copy(password)
 
         info_print("Password copied to clipboard!")
+    command_clipboard.name = ["clipboard", "c"]
 
 
-    def command_modify(self):
+    def command_modify(self, account_pattern=None):
         """Modify account"""
 
-        pattern = raw_input("Write an account pattern: ")
-        pattern = pattern.strip()
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
 
-        if pattern == "": return
+            if account_pattern == "": return
 
-        account = self.find_account(pattern)
+        account = self.find_account(account_pattern)
 
         if account is None:
             raise AccountNotFoundException
@@ -500,15 +468,17 @@ class Password_Manager(object):
             self.save_accounts()
 
             info_print("Account successfully modified!")
+    command_modify.name = ["modify"]
 
 
-    def command_rename(self):
+    def command_rename(self, account_name=None):
         """Rename account"""
 
-        account_name = raw_input("Account name: ")
-        account_name = account_name.strip()
+        if account_name is None:
+            account_name = raw_input("Account name: ")
+            account_name = account_name.strip()
 
-        if account_name == "": return
+            if account_name == "": return
 
 
         for account in self._root.findall('account'):
@@ -523,32 +493,37 @@ class Password_Manager(object):
                 return
 
         raise AccountNotFoundException
+    command_rename.name = ["rename"]
 
 
-    def command_search(self):
+    def command_search(self, account_pattern=None):
         """Search account"""
 
-        pattern = raw_input("Write an account pattern: ")
-        pattern = pattern.strip()
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
 
-        if pattern == "": return
+            if account_pattern == "": return
+
 
         account = self.find_account(pattern)
         if account is None:
             raise AccountNotFoundException
         else:
-            self.print_account(account)
+            self.print_account(account, show_password= self._show_passwords)
+    command_search.name = ["search", "s"]
 
 
-    def command_print_and_copy_to_cliboard(self):
+    def command_print_and_copy_to_cliboard(self, account_pattern=None):
         """Print account and copy password to clipboard"""
 
-        pattern = raw_input("Write an account pattern: ")
-        pattern = pattern.strip()
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
 
-        if pattern == "": return
+            if account_pattern == "": return
 
-        account = self.find_account(pattern)
+        account = self.find_account(account_pattern)
 
         if account is None:
             raise AccountNotFoundException
@@ -557,7 +532,46 @@ class Password_Manager(object):
             clipboard.copy(password)
 
             print("\nPassword saved to clipboard.")
-            self.print_account(account)
+            self.print_account(account, show_password=self._show_passwords)
+    command_print_and_copy_to_cliboard.name = ["pc"]
+
+
+    def command_print_account_all(self, account_pattern=None):
+        """Print all data of account (including the password)"""
+
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
+
+            if account_pattern == "": return
+
+        account = self.find_account(account_pattern)
+
+        if account is None:
+            raise AccountNotFoundException
+        else:
+            print("\nPassword saved to clipboard.")
+            self.print_account(account, show_password=True)
+    command_print_account_all.name = ["print_all", "pa"]
+
+
+    def command_print(self, account_pattern=None):
+        """Print account"""
+
+        if account_pattern is None:
+            account_pattern = raw_input("Write an account pattern: ")
+            account_pattern = account_pattern.strip()
+
+            if account_pattern == "": return
+
+        account = self.find_account(account_pattern)
+
+        if account is None:
+            raise AccountNotFoundException
+        else:
+            self.print_account(account, show_password=self._show_passwords)
+    command_print.name = ["print", "p"]
+
 
     def command_all(self):
         """Print all accounts"""
@@ -567,9 +581,10 @@ class Password_Manager(object):
         if list_of_accounts:
             print_with_indent("List of accounts")
             for account in list_of_accounts:
-                self.print_account(account)
+                self.print_account(account, show_password=self._show_passwords)
         else:
             warn_print("No account")
+    command_all.name = ["all"]
 
 
     def command_show_passwords(self):
@@ -577,6 +592,7 @@ class Password_Manager(object):
 
         self._show_passwords = True
         print("All password will be shown now!")
+    command_show_passwords.name = ["show_passwords"]
 
 
     def command_hide_passwords(self):
@@ -585,16 +601,19 @@ class Password_Manager(object):
         self._show_passwords = False
 
         print("All password will be hidden now!")
+    command_hide_passwords.name = ["hide_passwords"]
 
 
     def command_dump(self):
         """Dump file content in plain text"""
         ET.dump(root)
+    command_dump.name = ["dump"]
 
 
     def command_help(self):
         """Print help"""
         print(self.HELP_MESSAGE)
+    command_help.name = ["help", "h"]
 
 
     def command_clear(self):
@@ -602,12 +621,14 @@ class Password_Manager(object):
 
         clear_screen()
         print(self.HELP_MESSAGE)
+    command_clear.name = ["clear"]
 
 
     def command_exit(self):
         """Exit"""
 
         exit()
+    command_exit.name = ["exit"]
 
 
     def run(self):
@@ -646,7 +667,9 @@ class Password_Manager(object):
             self._root = ET.ElementTree(ET.fromstring(data.encode('utf-8'))).getroot()
 
         clear_screen()
-        print("-"*len(self.TITLE) + "\n" + self.TITLE + "\n" + "-"*len(self.TITLE) + "\n")
+
+        header = "-"*len(self.TITLE) + "\n" + self.TITLE + "\n" + "-"*len(self.TITLE) + "\n"
+        print(header)
 
 
         print(self.HELP_MESSAGE)
@@ -660,19 +683,21 @@ class Password_Manager(object):
 
         while True:
             try:
-                command_name = raw_input("\nCommand: ")
+                user_input = raw_input("\nCommand: ")
             except KeyboardInterrupt:
                 sys.exit()
 
             print("")
 
-            command_name = command_name.strip().lower()
+            command = shlex.split(user_input)
+            command_name = command[0]
 
             if command_name in self.LIST_OF_COMMANDS:
                 command_function = getattr(self, self.LIST_OF_COMMANDS[command_name])
+                command_args = command[1:]
 
                 try:
-                    command_function()
+                    command_function(*command_args)
                 except PasswordManagerException as e:
                     error_print(str(e))
                 except KeyboardInterrupt:
@@ -680,7 +705,51 @@ class Password_Manager(object):
             else:
                 error_print("Command not found!")
 
-Password_Manager.HELP_MESSAGE = create_help()
+def _create_help():
+    HELP_MESSAGE = 'Available commands:\n'
+    commands_help = []
+
+    for method_name in Password_Manager.__dict__.keys():
+        if method_name.startswith("command_"):
+            command_function = Password_Manager.__dict__[method_name]
+
+            command_names = command_function.name
+            command_names.sort(key=len, reverse=True)
+
+            commands_help.append((command_names, command_function.__doc__.lower()))
+
+
+    commands_help.sort(key=lambda x: x[0][0])
+
+    for command_names, help_string in commands_help:
+        HELP_MESSAGE += ", ".join(command_names).ljust(16) + help_string + "\n"
+
+    return HELP_MESSAGE
+
+
+Password_Manager.HELP_MESSAGE = _create_help()
+del _create_help
+
+
+def _create_list_of_commands():
+    LIST_OF_COMMANDS = {}
+
+    for method_name in Password_Manager.__dict__.keys():
+        if method_name.startswith("command_"):
+            command_function = Password_Manager.__dict__[method_name]
+
+            command_names = command_function.name
+            for command_name in command_names:
+                if command_name in LIST_OF_COMMANDS:
+                    raise Exception("Repeated command: %s"%command_name)
+                else:
+                    LIST_OF_COMMANDS[command_name] = method_name
+
+    return LIST_OF_COMMANDS
+
+
+Password_Manager.LIST_OF_COMMANDS = _create_list_of_commands()
+del _create_list_of_commands
 
 
 if __name__ == "__main__":

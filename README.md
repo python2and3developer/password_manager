@@ -24,8 +24,10 @@ exit            exit
 help, h         print help
 hide_passwords  hide passwords
 list, l         list all available account by name
-modify, m       modify account
-p               print account and copy password to clipboard
+modify          modify account
+pc              print account and copy password to clipboard
+print, p        print account
+print_all, pa   print all data of account (including the password)
 rename          rename account
 search, s       search account
 show_passwords  show passwords
