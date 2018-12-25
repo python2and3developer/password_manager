@@ -1,4 +1,5 @@
-#!/usr/bin/python
+#encoding: utf-8
+
 import sys
 import re
 import getpass
@@ -8,35 +9,22 @@ import platform
 import readline
 import itertools
 import shlex
+import hashlib
+import json
 
-import xml.etree.ElementTree as ET
-
-
-# TODO
-# - To use pyperclip???
-# - Commands with parameters
-# - Consider these libraries:
-#       https://github.com/italorossi/ishell
-#       https://github.com/jonathanslenders/python-prompt-toolkit
-# Print and ask copy to clipboard
-# Class Account
-
-
-try:
-    from pretty_bad_protocol import gnupg
-except ImportError:
-    print("[x] ERROR: Cannot find 'pretty_bad_protocol'. Please install it: pip install pretty_bad_protocol")
-    sys.exit()
+import pyaes
 
 
 WHICH_CMD = 'which'
 CLIPBOARD_ENCODING = 'utf-8'
 
+LIST_OF_TRUE_VALUES = ["y", "yes", "1", "on"]
+LIST_OF_FALSE_VALUES = ["n", "no", "0", "off"]
+
 
 def _executable_exists(name):
     return subprocess.call([WHICH_CMD, name],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE) == 0
-
 
 
 class PasswordManagerException(Exception):
@@ -56,6 +44,9 @@ class AccountNotFoundException(PasswordManagerException):
 
 class AccountExistsException(PasswordManagerException):
     """Account name already exits"""
+
+class AccountKeyIndexException(PasswordManagerException):
+    """Invalid index key in account"""
 
 
 class EncryptionException(PasswordManagerException):
@@ -125,13 +116,6 @@ class XSel(object):
         stdout, stderr = p.communicate()
         return stdout.decode(CLIPBOARD_ENCODING)
 
-
-if _executable_exists("xclip"):
-    clipboard = XClip
-elif _executable_exists("xsel"):
-    clipboard = XSel
-
-
 def clear_screen():
     os.system('reset')
 
@@ -147,36 +131,167 @@ def info_print(s):
     print("[*] {0}".format(s))
 
 
-def print_with_indent(text, indent="  "):
+
+if _executable_exists("xclip"):
+    clipboard = XClip
+elif _executable_exists("xsel"):
+    clipboard = XSel
+else:
+    clipboard = None
+    warn_print("'xclip' or 'xsel' is not installed")
+
+def print_indented(text, indent="  "):
     print("\n".join(indent+ l for l in text.splitlines()))
 
 
-def decrypt_file(gpg, filename, password):
-    with open(filename, "rb") as f:
-        dec_data = gpg.decrypt(f.read(), passphrase=password)
-
-    if dec_data.ok is False:
-        raise DecryptionException(dec_data.stderr)
-
-    return dec_data.data.decode("utf-8")
+def decrypt(enc_data, password):  
+    key_32 = hashlib.sha256(password).digest()
 
 
+    dec_data = pyaes.AESModeOfOperationCTR(key_32).decrypt(enc_data)
+    dec_data = dec_data.decode("utf-8")
 
-def encrypt_file(gpg, filename, password, data):
-    data = data.encode("utf-8")
-
-    enc_d = gpg.encrypt(data, symmetric='AES256', passphrase=password, armor=False, encrypt=False)
-
-    if enc_d.ok is False:
-        raise EncryptionException(enc_d.stderr)
-
-    encrypted_data = enc_d.data
+    return dec_data
 
 
-    with open(filename,'wb') as f:
-        f.write(encrypted_data)
 
-    return True
+def encrypt(dec_data, password):
+    key_32 = hashlib.sha256(password).digest()
+
+    dec_data = dec_data.encode("utf-8")    
+    enc_data = pyaes.AESModeOfOperationCTR(key_32).encrypt(dec_data)
+
+    return enc_data
+
+
+class Account(object):
+    def __init__(self, password_manager, root):
+        self.root = root
+        self._password_manager = password_manager
+
+    def save(self):
+        self._password_manager.save_accounts()
+
+    def _check_index(self, index):
+        try:
+            index = int(index)
+        except ValueError:
+            raise AccountKeyIndexException("Not a valid index: %s"%index)
+
+        if 0 <= index < len(self.root["data"]):
+            return index    
+        else:
+            raise AccountKeyIndexException("Index out of range: %s"%index)
+
+    @property
+    def num_keys(self):
+        return len(self.root["data"])
+
+
+    def get_key(self, index):
+        index = self._check_index(index)
+        
+        return self.root["data"][index]
+
+    def del_key(self, index):
+        index = self._check_index(index)
+
+        del self.root["data"][index]
+        
+    def set_key(self, index, key=None, value=None):
+        index = self._check_index(index)
+        item_data = self.root["data"][index]
+
+        if key is not None:
+            item_data["key"] = key
+
+        if value is not None:
+            item_data["value"] = value
+
+    def add_key(self, key, value):
+        key = self._normalize_key_name(key)
+        value = self._normalize_value(value)
+
+        self.root["data"].append({
+            "key": key,
+            "value": value
+        })
+
+    def get_value_by_name(self, key):
+        key = self._normalize_key_name(key)
+        for item_data in self.root["data"]:
+            if item_data["key"] == key:
+                return item_data["value"]
+        
+    @property
+    def name(self):
+        return self.root['account_name']
+
+    @name.setter
+    def name(self, account_name):
+        account_name = self._normalize_name(account_name)
+        self.root["account_name"] = account_name
+
+    @staticmethod
+    def _normalize_name(account_name):
+        account_name = " ".join(account_name.lower().strip().split())
+        account_name = account_name.replace("*", "")
+        account_name = account_name.replace("?", "")
+
+        return account_name
+
+
+    @staticmethod
+    def _normalize_key_name(key):
+        key = " ".join(key.strip().lower().split())
+        return key
+
+    @staticmethod
+    def _normalize_value(value):
+        value = value.strip()
+        return value
+
+    @classmethod
+    def create_account(cls, password_manager, account_name, keys):
+        account_name = cls._normalize_name(account_name)
+
+        account_element = {'account_name': account_name, "data":[]}
+
+        for key, value in keys.items():
+            key = cls._normalize_key_name(key)
+            value = cls._normalize_value(value)
+
+            account_element["data"].append({
+                "key": key,
+                "value": value
+            })
+
+        password_manager._root["accounts"].append(account_element)
+
+        return Account(password_manager, account_element)
+
+
+    def print_account(self, indent="  ", show_values=False):
+        account_element = self.root
+
+        name = account_element['account_name'].encode(sys.stdout.encoding)
+        print_indented("ACCOUNT NAME: {0}".format(name), indent=indent)
+        print_indented("DATA", indent=indent)
+        
+        for index, item_data in enumerate(account_element["data"]):
+            key = item_data["key"]
+            key = key.encode(sys.stdout.encoding)
+
+            if show_values:
+                value = item_data["value"]
+                value = value.encode(sys.stdout.encoding)
+
+                print_indented("  %d. %s: %s"%(index, key, value), indent=indent)
+            else:
+                print_indented("  %d. %s"%(index, key), indent=indent)
+
+    def remove(self):
+        self._password_manager._root["accounts"].remove(self.root)
 
 
 class Password_Manager(object):
@@ -187,131 +302,76 @@ class Password_Manager(object):
         self._filename = filename
         self._master_password = None
 
+        self._show_values = False
+
         self._root = None
 
-        self._show_passwords = False
+    def all_accounts(self):
+        list_of_accounts = []
 
-        self._gpg = gnupg.GPG()
+        for account_element in self._root["accounts"]:
+            list_of_accounts.append(Account(self, account_element))
 
-
-    def print_account(self, account, indent="  ", show_password=False):
-        extra_info = None
-        passwd = None
-
-        name = account.get('name').encode(sys.stdout.encoding)
-        if account.find('extra_info') is not None and account.find('extra_info').text is not None:
-            extra_info = account.find('extra_info').text.encode(sys.stdout.encoding)
-
-        if show_password and account.find('password') is not None and account.find('password').text is not None:
-            passwd = account.find('password').text.encode(sys.stdout.encoding)
-
-
-        print("")
-        print_with_indent("ACCOUNT NAME: {0}".format(name), indent=indent)
-
-        if passwd is not None:
-            print_with_indent("PASSWORD: {0}".format(passwd), indent=indent)
-
-        if extra_info is not None:
-            print_with_indent("EXTRA INFO: ", indent=indent)
-            print_with_indent(extra_info, indent=indent+ "    ")
-
-        print_with_indent("-"*40, indent=indent)
-
-
-    def normalize_account_name(self, account_name):
-        account_name = " ".join(account_name.lower().strip().split())
-        account_name = account_name.replace("*", "")
-        account_name = account_name.replace("?", "")
-
-        return account_name
-
-
-    def get_accounts(self):
-        return self._root.findall('account')
-
+        return list_of_accounts
 
     def save_accounts(self):
-        data = ET.tostring(self._root)
+        encrypted_data = encrypt(json.dumps(self._root), self._master_password)
+        with open(self._filename, "wb") as f:
+            f.write(encrypted_data)
 
-        return encrypt_file(self._gpg, self._filename, self._master_password, data)
-
-
-    def ask_password(self, old_password=None):
+    def ask_hidden_value(self, key_name, old_value=None):
         while True:
-            if old_password is None or old_password == "":
-                new_password = getpass.getpass("Password: ")
+            if old_value is None or old_value == "":
+                new_value = getpass.getpass("%s: "%key_name)
             else:
-                new_password = getpass.getpass("Password [{0}]: ".format(old_password))
+                new_value = getpass.getpass("%s [%s]: "%(key_name, old_value))
 
-            if new_password == "": return
+            if new_value == "": return
 
-            new_password = new_password.decode(sys.stdin.encoding)
+            new_value = new_value.decode(sys.stdin.encoding)
 
-            repeat_password = getpass.getpass("Repeat password: ")
+            repeat_value = getpass.getpass("Repeat %s: "%key_name)
 
-            if new_password == repeat_password:
-                return new_password
+            if new_value == repeat_value:
+                return new_value
             else:
-                warn_print("Passwords don't coincide")
+                warn_print("values don't coincide")
 
+    def ask_account_index(self, index=None):
+        if index is None:
+            index = raw_input("Write an account index: ")
 
-    def create_account(self, account_name, old_password="", old_extra_info=""):
-        account_name = self.normalize_account_name(account_name)
+        account = self.find_account_by_index(index)
 
-        new_account = ET.Element("account", {'name': account_name})
+        if account is None:
+            raise AccountNotFoundException
 
-        new_password = self.ask_password(old_password)
+        return account
 
-        if new_password is None:
-            new_password = old_password
+    def ask_confirmation(self, msg):
+        answer = raw_input(msg + " Answer 'y' to confirm...\n").strip().lower()
 
-        passwd = ET.SubElement(new_account, "password")
-        passwd.text = new_password
-
-        if old_extra_info:
-            print("Extra info [{0}]: ".format(old_extra_info))
+        if answer == "y":
+            return True
         else:
-            print("Extra info: ")
-
-        text_lines = []
-
-        white_line = False
-        while True:
-            line = raw_input()
-            if line:
-                text_lines.append(line)
-                white_line = False
-            else:
-                if white_line:
-                    break
-                else:
-                    white_line = True
+            return False
 
 
-        text = '\n'.join(text_lines)
-        text = text.strip().decode(sys.stdin.encoding)
-
-
-        if not text:
-            text = old_extra_info
-
-        extra_info = ET.SubElement(new_account, "extra_info")
-        extra_info.text = text
-
-        return new_account
-
-
-    def find_account(self, pattern):
+    def find_account_by_index(self, index):
         try:
-            index = int(pattern)
+            index = int(index)
         except ValueError:
             pass
         else:
-            list_of_accounts = self.get_accounts()
+            list_of_accounts = self.all_accounts()
             if 0 <= index < len(list_of_accounts):
                 return list_of_accounts[index]
 
+
+    def find_account(self, pattern):
+        account = find_account_by_index(pattern)
+        if account:
+            return account
 
         if "*" in pattern or "?" in pattern:
             pattern = pattern.strip()
@@ -338,165 +398,227 @@ class Password_Manager(object):
             _pattern += re.escape(pattern[start:])
             pattern = _pattern
 
-            for account in self._root.findall('account'):
-                if re.search(pattern, account.get('name'), flags=re.I):
+            for account in self.all_accounts():
+                if re.search(pattern, account.name, flags=re.I):
                     return account
 
         else:
-            pattern = self.normalize_account_name(pattern)
+            pattern = Account.normalize_name(pattern)
 
-            for account in self._root.findall('account'):
-                if pattern == account.get('name'):
+            for account in self.all_accounts():
+                if pattern == account.name:
                     return account
 
-            for account in self._root.findall('account'):
-                if pattern in account.get('name'):
+            for account in self.all_accounts():
+                if pattern in account.name:
                     return account
 
-
-    def add_account(self, account_name):
-        for account in self._root.findall('account'):
-            if account_name == account.get('name'):
-                raise AccountExistsException
-
-        account = self.create_account(account_name)
-        self._root.append(account)
-
-        self.save_accounts()
-
-
-    def command_list(self):
-        """List all available account by name"""
-
-        list_of_accounts = self.get_accounts()
-
-        if list_of_accounts:
-            print_with_indent("List of account:")
-            for account_index, account in enumerate(list_of_accounts):
-                print_with_indent("%d. "%account_index + account.get('name'))
-
-        else:
-            warn_print("No account")
-    command_list.name = ["list", "l"]
-
-
-    def command_add(self, account_name=None):
+    def create_account(self, account_name=None):
         """Add account"""
 
         if account_name is None:
-            account_name = raw_input("Account name: ")
+            account_name = raw_input("Account name:\n ")
             account_name = account_name.strip()
 
             if account_name == "": return
 
-        self.add_account(account_name)
+        keys = {}
+
+        while True:
+            if not self.ask_confirmation("Do you want to create a key?"): break
+
+            key = raw_input("\nKey: ")
+
+            print("Value: ")
+
+            value_lines = []
+
+            white_line = False
+            while True:
+                line = raw_input()
+                if line:
+                    value_lines.append(line.decode(sys.stdin.encoding))
+                    white_line = False
+                else:
+                    if white_line:
+                        break
+                    else:
+                        white_line = True
+
+
+            value = '\n'.join(value_lines)
+            value = value.strip()
+
+            keys[key] = value
+
+        account = Account.create_account(self, account_name, keys)
+        return account
+
+    def _rename(self, account):
+        new_account_name = raw_input("New name for account: ")
+
+        account.name = new_account_name
+        account.save()
+
+        info_print("Account successfully renamed!")        
+
+
+    def cmd(*args):
+        def decorator(f):
+            cmd_name = list(args)
+            cmd_name.sort(key=len, reverse=True)
+
+            f._cmd_name = cmd_name
+            f._cmd = True
+
+            return f
+        return decorator
+
+
+    @classmethod
+    def _command_methods(cls):
+        for method_name in cls.__dict__.keys():
+            method_function = cls.__dict__[method_name]
+
+            if hasattr(method_function, "_cmd"):
+                yield method_name, method_function
+
+
+    @cmd("create")
+    def command_create(self, account_name=None):
+        """Create a new account"""
+
+        account = self.create_account(account_name)
+        account.save()
+
         info_print("Account added!")
-    command_add.name = ["add", "a"]
 
 
-    def command_delete(self, account_pattern=None):
+    @cmd("list", "l")
+    def command_list(self):
+        """List all available account by name"""
+
+        list_of_accounts = self.all_accounts()
+
+        if list_of_accounts:
+            print_indented("List of accounts:")
+            for account_index, account in enumerate(list_of_accounts):
+                print_indented("%d. "%account_index + account.name)
+
+        else:
+            warn_print("No account")
+
+    @cmd("delete", "d")
+    def command_delete(self, index=None):
         """Delete account"""
+        
+        account = self.ask_account_index(index)
 
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
+        if self.ask_confirmation("are you sure that you want to delete this account?"):
+            account.print_account(show_values=self._show_values)
 
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
-        else:
-            print("are you sure that you want to delete this account? Answer 'y' to confirm.")
-            self.print_account(account, show_password=self._show_passwords)
-
-            answer = raw_input()
-            answer = answer.strip()
-
-            if answer == "y" or answer == "yes":
-                self._root.remove(account)
-
-                self.save_accounts()
-                info_print("Account deleted!")
-    command_delete.name = ["delete", "d"]
-
-
-    def command_clipboard(self, account_pattern=None):
-        """Copy password to clipboard"""
-
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
-
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
-        else:
-            password = account.find('password').text
-            clipboard.copy(password)
-
-        info_print("Password copied to clipboard!")
-    command_clipboard.name = ["clipboard", "c"]
-
-
-    def command_modify(self, account_pattern=None):
-        """Modify account"""
-
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
-
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
-        else:
-            old_password = account.find('password').text
-            old_extra_info = account.find('extra_info').text
-
-            new_account = self.create_account(account.get('name'), old_password, old_extra_info)
-
-            self._root.remove(account)
-            self._root.append(new_account)
-
+            account.remove()
             self.save_accounts()
 
-            info_print("Account successfully modified!")
-    command_modify.name = ["modify"]
+            info_print("Account deleted!")
+
+    @cmd("clipboard", "c")
+    def command_clipboard(self, index=None, key=None):
+        """Copy value to clipboard"""
+        if not clipboard:
+            error_print("Not possible to use clipboard")
+            return
+
+        account = self.ask_account_index(index)
+        
+        if key is None:
+            num_keys = account.num_keys
+            if num_keys == 0:
+                value = None
+            elif num_keys == 1:
+                value = account.get_key(0)["value"]
+            else:
+                account.print_account(show_values=False)
+                key_index = raw_input("\nKey index: ")
+
+                value = account.get_key(key_index)["value"]
+        else:
+            value = account.get_value_by_name(key)
+
+        if value:
+            clipboard.copy(value)
+
+            info_print("value copied to clipboard!")
+        else:
+            warn_print("key not found!")
+
+    @cmd("edit", "e")
+    def command_edit(self, index=None):
+        """Edit account"""
+
+        account = self.ask_account_index(index)
 
 
-    def command_rename(self, account_name=None):
+        while True:
+            print("")
+            account.print_account(show_values=self._show_values)
+
+            print("\nSelect option:")
+            print("  1. Edit key name")
+            print("  2. Edit value")
+            print("  3. Delete key")
+            print("  4. Add key")
+            print("  5. Rename account")
+            print("  6. Exit")
+
+            option = raw_input()
+            option = option.strip()
+
+
+            if option == "1":
+                index = raw_input("Key index: ")
+                key = raw_input("Key [%s]: "%account.get_key(index)["key"])
+                
+                account.set_key(index, key=key)
+                self.save_accounts()
+                
+            elif option == "2":
+                index = raw_input("Key index: ")
+                value = raw_input("Value [%s]: "%account.get_key(index)["value"])
+                
+                account.set_key(index, value=value)
+                account.save()
+                
+            elif option == "3":
+                index = raw_input("Key index: ")
+                account.del_key(index)
+                account.save()
+
+            elif option == "4":
+                key = raw_input("Key: ")
+                value = raw_input("Value: ")
+
+                account.add_key(key, value)
+                account.save()
+
+            elif option == "5":
+                self._rename(account)
+
+            elif option == "6":
+                break
+            else:
+                print("Invalid option: %s"%option)
+
+    @cmd("rename")
+    def command_rename(self, index=None):
         """Rename account"""
 
-        if account_name is None:
-            account_name = raw_input("Account name: ")
-            account_name = account_name.strip()
-
-            if account_name == "": return
+        account = self.ask_account_index(index)
+        self._rename(account)
 
 
-        for account in self._root.findall('account'):
-            if account.get('name') == account_name:
-                new_account_name = raw_input("New name for account: ")
-                new_account_name = self.normalize_account_name(new_account_name)
-
-                account.set("name", new_account_name)
-                self.save_accounts()
-
-                info_print("Account successfully renamed!")
-                return
-
-        raise AccountNotFoundException
-    command_rename.name = ["rename"]
-
-
-    def command_search(self, account_pattern=None):
+    @cmd("search", "s")
+    def command_search(self, account_pattern=None, show_values=None):
         """Search account"""
 
         if account_pattern is None:
@@ -510,132 +632,99 @@ class Password_Manager(object):
         if account is None:
             raise AccountNotFoundException
         else:
-            self.print_account(account, show_password= self._show_passwords)
-    command_search.name = ["search", "s"]
+            account.print_account(show_values=self._show_values)
 
 
-    def command_print_and_copy_to_cliboard(self, account_pattern=None):
-        """Print account and copy password to clipboard"""
-
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
-
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
-        else:
-            password = account.find('password').text
-            clipboard.copy(password)
-
-            print("\nPassword saved to clipboard.")
-            self.print_account(account, show_password=self._show_passwords)
-    command_print_and_copy_to_cliboard.name = ["pc"]
-
-
-    def command_print_account_all(self, account_pattern=None):
-        """Print all data of account (including the password)"""
-
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
-
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
-        else:
-            print("\nPassword saved to clipboard.")
-            self.print_account(account, show_password=True)
-    command_print_account_all.name = ["print_all", "pa"]
-
-
-    def command_print(self, account_pattern=None):
+    @cmd("print", "p")
+    def command_print(self, index=None, show_values=None):
         """Print account"""
 
-        if account_pattern is None:
-            account_pattern = raw_input("Write an account pattern: ")
-            account_pattern = account_pattern.strip()
-
-            if account_pattern == "": return
-
-        account = self.find_account(account_pattern)
-
-        if account is None:
-            raise AccountNotFoundException
+        account = self.ask_account_index(index)
+        if show_values is None:
+            show_values = self._show_values
         else:
-            self.print_account(account, show_password=self._show_passwords)
-    command_print.name = ["print", "p"]
+            show_values = show_values.strip().lower()
+            if show_values in LIST_OF_TRUE_VALUES:
+                show_values = True                
+            elif show_values in LIST_OF_FALSE_VALUES:
+                show_values = False
+            else:
+                raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
+
+        account.print_account(show_values=show_values)
 
 
-    def command_all(self):
+    @cmd("print_all", "pa")
+    def command_print_all(self, show_values=None):
         """Print all accounts"""
 
-        list_of_accounts = self.get_accounts()
-
-        if list_of_accounts:
-            print_with_indent("List of accounts")
-            for account in list_of_accounts:
-                self.print_account(account, show_password=self._show_passwords)
+        if show_values is None:
+            show_values = self._show_values
         else:
-            warn_print("No account")
-    command_all.name = ["all"]
+            show_values = show_values.strip().lower()
+            if show_values in LIST_OF_TRUE_VALUES:
+                show_values = True                
+            elif show_values in LIST_OF_FALSE_VALUES:
+                show_values = False
+            else:
+                raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
+
+        first = True
+        for i, account in enumerate(self.all_accounts()):
+            print("%s. "%i)
+            account.print_account(show_values=show_values)
+            if first:
+                first = False
+            else:
+                print("-"*40)
+
+    @cmd("show_values")
+    def command_show_values(self):
+        """Show values"""
+
+        self._show_values = True
+        print("All values will be shown now!")
 
 
-    def command_show_passwords(self):
-        """Show passwords"""
+    @cmd("hide_values")
+    def command_hide_values(self):
+        """Hide values"""
 
-        self._show_passwords = True
-        print("All password will be shown now!")
-    command_show_passwords.name = ["show_passwords"]
+        self._show_values = False
 
-
-    def command_hide_passwords(self):
-        """Hide passwords"""
-
-        self._show_passwords = False
-
-        print("All password will be hidden now!")
-    command_hide_passwords.name = ["hide_passwords"]
+        print("All values will be hidden now!")
 
 
+    @cmd("dump")
     def command_dump(self):
         """Dump file content in plain text"""
-        ET.dump(root)
-    command_dump.name = ["dump"]
+        print_indented(json.dumps(self._root, indent=4))
 
-
+    @cmd("help", "h")
     def command_help(self):
         """Print help"""
         print(self.HELP_MESSAGE)
-    command_help.name = ["help", "h"]
 
-
+    @cmd("clear")
     def command_clear(self):
         """Clear screen"""
 
         clear_screen()
         print(self.HELP_MESSAGE)
-    command_clear.name = ["clear"]
 
 
+    @cmd("exit")
     def command_exit(self):
         """Exit"""
 
         exit()
-    command_exit.name = ["exit"]
-
 
     def run(self):
         if os.path.isfile(self._filename):
             new_file = False
         else:
-            warn_print("A new password file will be created.")
+            print("")
+            info_print("A new value file will be created.")
             new_file = True
 
         try:
@@ -650,21 +739,23 @@ class Password_Manager(object):
                 sys.exit()
 
             if self._master_password != repeated_master_password:
-                error_print("Passwords doesn't coincide")
+                error_print("values doesn't coincide")
                 sys.exit()
 
-            self._root = ET.Element('accounts')
+            self._root = {"accounts": []}
 
             self.save_accounts()
         else:
+            with open(self._filename, "rb") as f:
+                enc_data = f.read()
+
             try:
-                data = decrypt_file(self._gpg, self._filename, self._master_password)
+                root = decrypt(enc_data, self._master_password)
             except DecryptionException as e:
                 error_print("Error doing decryption:\n%s"%str(e))
-                sys.ext()
-
-
-            self._root = ET.ElementTree(ET.fromstring(data.encode('utf-8'))).getroot()
+                sys.exit()
+           
+            self._root = json.loads(root)
 
         clear_screen()
 
@@ -674,16 +765,16 @@ class Password_Manager(object):
 
         print(self.HELP_MESSAGE)
 
-        list_of_accounts = self.get_accounts()
+        list_of_accounts = self.all_accounts()
 
         if list_of_accounts:
             print("List of accounts:")
             for account_index, account in enumerate(list_of_accounts):
-                print("%d. "%account_index + account.get('name'))
+                print("%d. "%account_index + account.name)
 
         while True:
             try:
-                user_input = raw_input("\nCommand: ")
+                user_input = raw_input("\n\nCommand: ")
             except KeyboardInterrupt:
                 sys.exit()
 
@@ -705,18 +796,39 @@ class Password_Manager(object):
             else:
                 error_print("Command not found!")
 
+
+
+def _create_list_of_commands():
+    LIST_OF_COMMANDS = {}
+
+    for method_name, method_function in Password_Manager._command_methods():
+        command_names = method_function._cmd_name
+        for command_name in command_names:
+            if command_name in LIST_OF_COMMANDS:
+                raise Exception("Repeated command: %s"%command_name)
+            else:
+                LIST_OF_COMMANDS[command_name] = method_name
+
+    return LIST_OF_COMMANDS
+
+
+Password_Manager.LIST_OF_COMMANDS = _create_list_of_commands()
+del _create_list_of_commands
+
+
 def _create_help():
     HELP_MESSAGE = 'Available commands:\n'
     commands_help = []
 
-    for method_name in Password_Manager.__dict__.keys():
-        if method_name.startswith("command_"):
-            command_function = Password_Manager.__dict__[method_name]
+    for method_name, method_function in Password_Manager._command_methods():
+        command_names = method_function._cmd_name
 
-            command_names = command_function.name
-            command_names.sort(key=len, reverse=True)
+        if hasattr(method_function, "__doc__"):
+            help_msg = method_function.__doc__.lower()
+        else:
+            help_msg = ""
 
-            commands_help.append((command_names, command_function.__doc__.lower()))
+        commands_help.append((command_names, help_msg))
 
 
     commands_help.sort(key=lambda x: x[0][0])
@@ -731,31 +843,10 @@ Password_Manager.HELP_MESSAGE = _create_help()
 del _create_help
 
 
-def _create_list_of_commands():
-    LIST_OF_COMMANDS = {}
-
-    for method_name in Password_Manager.__dict__.keys():
-        if method_name.startswith("command_"):
-            command_function = Password_Manager.__dict__[method_name]
-
-            command_names = command_function.name
-            for command_name in command_names:
-                if command_name in LIST_OF_COMMANDS:
-                    raise Exception("Repeated command: %s"%command_name)
-                else:
-                    LIST_OF_COMMANDS[command_name] = method_name
-
-    return LIST_OF_COMMANDS
-
-
-Password_Manager.LIST_OF_COMMANDS = _create_list_of_commands()
-del _create_list_of_commands
-
-
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Password manager.')
-    parser.add_argument('filename', action="store", help="Path to file containing encrypted passwords")
+    parser = argparse.ArgumentParser(description='value manager.')
+    parser.add_argument('filename', action="store", help="Path to file containing encrypted values")
 
     args = parser.parse_args()
     filename = args.filename

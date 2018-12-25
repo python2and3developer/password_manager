@@ -14,21 +14,19 @@ Python2 is required.
 password_manager.py [-h] filename
 
 Available commands:
-add, a          add account
-all             print all accounts
 clear           clear screen
-clipboard, c    copy password to clipboard
+clipboard, c    copy value to clipboard
+create          create a new account
 delete, d       delete account
 dump            dump file content in plain text
+edit, e         edit account
 exit            exit
 help, h         print help
-hide_passwords  hide passwords
+hide_values     hide values
 list, l         list all available account by name
-modify          modify account
-pc              print account and copy password to clipboard
 print, p        print account
-print_all, pa   print all data of account (including the password)
+print_all, pa   print all accounts
 rename          rename account
 search, s       search account
-show_passwords  show passwords
+show_values     show values
 ```
