@@ -15,11 +15,38 @@ import json
 import pyaes
 
 
+# TODO
+# Remove account
+# - Python 3 support
+# - To use pyperclip???
+# - Consider these libraries:
+#       https://github.com/italorossi/ishell
+#       https://github.com/jonathanslenders/python-prompt-toolkit
+# Print and ask copy to clipboard
+# To use module in pure python for symmetric encription instead of gnugpg
+# Mirar esto:
+# https://stackoverflow.com/questions/42568262/how-to-encrypt-text-with-a-value-in-python/44212550
+#  hashlib.sha256("Nobody inspects the spammish repetition").hexdigest()
+
 WHICH_CMD = 'which'
 CLIPBOARD_ENCODING = 'utf-8'
 
 LIST_OF_TRUE_VALUES = ["y", "yes", "1", "on"]
 LIST_OF_FALSE_VALUES = ["n", "no", "0", "off"]
+
+
+def get_boolean(c):
+    if isinstance(c, bool):
+        return c
+    else:
+        c = c.strip().lower()
+        if c in LIST_OF_TRUE_VALUES:
+            return True                
+        elif show_values in LIST_OF_FALSE_VALUES:
+            return False
+
+def echo(m, indent=0):
+    print("    "*indent + m)
 
 
 def _executable_exists(name):
@@ -271,7 +298,7 @@ class Account(object):
         return Account(password_manager, account_element)
 
 
-    def print_account(self, indent="  ", show_values=False):
+    def dump(self, indent="  ", show_values=False):
         account_element = self.root
 
         name = account_element['account_name'].encode(sys.stdout.encoding)
@@ -295,16 +322,14 @@ class Account(object):
 
 
 class Password_Manager(object):
-
-    TITLE ="Password Manager"
-
-    def __init__(self, filename):
+    def __init__(self, filename, master_password=None, title="Password Manager"):
         self._filename = filename
-        self._master_password = None
+        self._master_password = master_password
 
         self._show_values = False
 
         self._root = None
+        self._title = title
 
     def all_accounts(self):
         list_of_accounts = []
@@ -515,7 +540,7 @@ class Password_Manager(object):
         account = self.ask_account_index(index)
 
         if self.ask_confirmation("are you sure that you want to delete this account?"):
-            account.print_account(show_values=self._show_values)
+            account.dump(show_values=self._show_values)
 
             account.remove()
             self.save_accounts()
@@ -538,7 +563,7 @@ class Password_Manager(object):
             elif num_keys == 1:
                 value = account.get_key(0)["value"]
             else:
-                account.print_account(show_values=False)
+                account.dump(show_values=False)
                 key_index = raw_input("\nKey index: ")
 
                 value = account.get_key(key_index)["value"]
@@ -561,7 +586,7 @@ class Password_Manager(object):
 
         while True:
             print("")
-            account.print_account(show_values=self._show_values)
+            account.dump(show_values=self._show_values)
 
             print("\nSelect option:")
             print("  1. Edit key name")
@@ -617,7 +642,7 @@ class Password_Manager(object):
         self._rename(account)
 
 
-    @cmd("search", "s")
+    @cmd("search")
     def command_search(self, account_pattern=None, show_values=None):
         """Search account"""
 
@@ -632,7 +657,7 @@ class Password_Manager(object):
         if account is None:
             raise AccountNotFoundException
         else:
-            account.print_account(show_values=self._show_values)
+            account.dump(show_values=self._show_values)
 
 
     @cmd("print", "p")
@@ -643,40 +668,39 @@ class Password_Manager(object):
         if show_values is None:
             show_values = self._show_values
         else:
-            show_values = show_values.strip().lower()
-            if show_values in LIST_OF_TRUE_VALUES:
-                show_values = True                
-            elif show_values in LIST_OF_FALSE_VALUES:
-                show_values = False
-            else:
+            show_values = get_boolean(show_values)
+            if show_values is None:
                 raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
 
-        account.print_account(show_values=show_values)
+        account.dump(show_values=show_values)
 
 
-    @cmd("print_all", "pa")
+    @cmd("print_all")
     def command_print_all(self, show_values=None):
         """Print all accounts"""
 
         if show_values is None:
             show_values = self._show_values
         else:
-            show_values = show_values.strip().lower()
-            if show_values in LIST_OF_TRUE_VALUES:
-                show_values = True                
-            elif show_values in LIST_OF_FALSE_VALUES:
-                show_values = False
-            else:
+            show_values = get_boolean(show_values)
+            if show_values is None:
                 raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
 
         first = True
         for i, account in enumerate(self.all_accounts()):
             print("%s. "%i)
-            account.print_account(show_values=show_values)
+            account.dump(show_values=show_values)
             if first:
                 first = False
             else:
                 print("-"*40)
+
+
+    @cmd("show", "s")
+    def command_show(self, index=None):
+        """Show all data of specific account"""
+        self.command_print(index=index, show_values=True)
+
 
     @cmd("show_values")
     def command_show_values(self):
@@ -727,25 +751,33 @@ class Password_Manager(object):
             info_print("A new value file will be created.")
             new_file = True
 
-        try:
-            self._master_password = getpass.getpass("Write the master password.\n")
-        except KeyboardInterrupt:
-            sys.exit()
+        if self._master_password is None:
+            try:
+                master_password = getpass.getpass("Write the master password.\n")
+            except KeyboardInterrupt:
+                return
+
+            if master_password == "":
+                return
 
         if new_file:
-            try:
-                repeated_master_password = getpass.getpass("Repeat password.\n")
-            except KeyboardInterrupt:
-                sys.exit()
+            if self._master_password is None:
+                try:
+                    repeated_master_password = getpass.getpass("Repeat password.\n")
+                except KeyboardInterrupt:
+                    return
 
-            if self._master_password != repeated_master_password:
-                error_print("values doesn't coincide")
-                sys.exit()
+                if master_password != repeated_master_password:
+                    error_print("values doesn't coincide")
+                    return
 
+                self._master_password = master_password
             self._root = {"accounts": []}
 
             self.save_accounts()
         else:
+            self._master_password = master_password
+
             with open(self._filename, "rb") as f:
                 enc_data = f.read()
 
@@ -753,13 +785,13 @@ class Password_Manager(object):
                 root = decrypt(enc_data, self._master_password)
             except DecryptionException as e:
                 error_print("Error doing decryption:\n%s"%str(e))
-                sys.exit()
+                return
            
             self._root = json.loads(root)
 
         clear_screen()
 
-        header = "-"*len(self.TITLE) + "\n" + self.TITLE + "\n" + "-"*len(self.TITLE) + "\n"
+        header = "-"*len(self._title) + "\n" + self._title + "\n" + "-"*len(self._title) + "\n"
         print(header)
 
 
@@ -776,19 +808,27 @@ class Password_Manager(object):
             try:
                 user_input = raw_input("\n\nCommand: ")
             except KeyboardInterrupt:
-                sys.exit()
+                return
 
             print("")
 
             command = shlex.split(user_input)
-            command_name = command[0]
+            command_name = command[0].lower()
 
             if command_name in self.LIST_OF_COMMANDS:
                 command_function = getattr(self, self.LIST_OF_COMMANDS[command_name])
-                command_args = command[1:]
+                args = []
+                kwargs = {}
+
+                for t in command[1:]:
+                    if "=" in t:
+                        key, value = t.split("=")
+                        kwargs[key] = value
+                    else:
+                        args.append(t)
 
                 try:
-                    command_function(*command_args)
+                    command_function(*args, **kwargs)
                 except PasswordManagerException as e:
                     error_print(str(e))
                 except KeyboardInterrupt:

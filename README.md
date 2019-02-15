@@ -29,4 +29,5 @@ print_all, pa   print all accounts
 rename          rename account
 search, s       search account
 show_values     show values
+show            show all data of specific account
 ```
