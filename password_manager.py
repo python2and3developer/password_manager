@@ -88,8 +88,6 @@ class EncryptionException(PasswordManagerException):
     """Cannot encrypt data!"""
 
 
-
-
 def clear_screen():
     os.system('reset')
 
@@ -196,6 +194,10 @@ class Account(object):
         account_name = self._normalize_name(account_name)
         self.root["account_name"] = account_name
 
+    @property
+    def data(self):
+        return self.root["data"]
+
     @staticmethod
     def _normalize_name(account_name):
         account_name = " ".join(account_name.lower().strip().split())
@@ -203,7 +205,6 @@ class Account(object):
         account_name = account_name.replace("?", "")
 
         return account_name
-
 
     @staticmethod
     def _normalize_key_name(key):
@@ -233,11 +234,6 @@ class Account(object):
         password_manager._root["accounts"].append(account_element)
 
         return Account(password_manager, account_element)
-
-    @property
-    def data(self):
-        return self.root["data"]
-
 
     def dump(self, show_values=False, graph=False, prefix_name=""):
         name = prefix_name + self.name.encode(sys.stdout.encoding)
@@ -269,6 +265,18 @@ class Account(object):
 
     def remove(self):
         self._password_manager._root["accounts"].remove(self.root)
+
+
+def cmd(*args):
+    def decorator(f):
+        cmd_name = list(args)
+        cmd_name.sort(key=len, reverse=True)
+
+        f._cmd_name = cmd_name
+        f._cmd = True
+
+        return f
+    return decorator
 
 
 class Password_Manager_Meta(type):
@@ -305,7 +313,6 @@ class Password_Manager_Meta(type):
                     LIST_OF_COMMANDS[command_name] = method_name
 
         return LIST_OF_COMMANDS
-
 
     @staticmethod
     def create_help(command_methods):
@@ -356,7 +363,7 @@ class Password_Manager(object):
         with open(self._filename, "wb") as f:
             f.write(encrypted_data)
 
-    def ask_hidden_value(self, key_name, old_value=None):
+    def _ask_hidden_value(self, key_name, old_value=None):
         while True:
             if old_value is None or old_value == "":
                 new_value = getpass.getpass("%s: "%key_name)
@@ -374,7 +381,15 @@ class Password_Manager(object):
             else:
                 warn_print("values don't coincide")
 
-    def ask_account_index(self, index=None):
+    def _ask_confirmation(self, msg):
+        answer = raw_input(msg + " Answer 'y' to confirm...\n").strip().lower()
+
+        if answer == "y":
+            return True
+        else:
+            return False
+
+    def _ask_account_index(self, index=None):
         if index is None:
             index = raw_input("Write an account index: ")
 
@@ -385,15 +400,6 @@ class Password_Manager(object):
 
         return account
 
-    def ask_confirmation(self, msg):
-        answer = raw_input(msg + " Answer 'y' to confirm...\n").strip().lower()
-
-        if answer == "y":
-            return True
-        else:
-            return False
-
-
     def find_account_by_index(self, index):
         try:
             index = int(index)
@@ -403,7 +409,6 @@ class Password_Manager(object):
             list_of_accounts = self.all_accounts()
             if 0 <= index < len(list_of_accounts):
                 return list_of_accounts[index]
-
 
     def find_account(self, pattern):
         account = find_account_by_index(pattern)
@@ -438,7 +443,6 @@ class Password_Manager(object):
             for account in self.all_accounts():
                 if re.search(pattern, account.name, flags=re.I):
                     return account
-
         else:
             pattern = Account.normalize_name(pattern)
 
@@ -450,7 +454,7 @@ class Password_Manager(object):
                 if pattern in account.name:
                     return account
 
-    def create_account(self, account_name=None):
+    def _create_account(self, account_name=None):
         """Add account"""
 
         if account_name is None:
@@ -462,7 +466,7 @@ class Password_Manager(object):
         keys = {}
 
         while True:
-            if not self.ask_confirmation("Do you want to create a key?"): break
+            if not self._ask_confirmation("Do you want to create a key?"): break
 
             key = raw_input("\nKey: ")
 
@@ -500,30 +504,18 @@ class Password_Manager(object):
         info_print("Account successfully renamed!")        
 
 
-    def cmd(*args):
-        def decorator(f):
-            cmd_name = list(args)
-            cmd_name.sort(key=len, reverse=True)
-
-            f._cmd_name = cmd_name
-            f._cmd = True
-
-            return f
-        return decorator
-
-
     @cmd("create")
-    def command_create(self, account_name=None):
+    def _command_create(self, account_name=None):
         """Create a new account"""
 
-        account = self.create_account(account_name)
+        account = self._create_account(account_name)
         account.save()
 
         info_print("Account added!")
 
 
     @cmd("list", "l")
-    def command_list(self):
+    def _command_list(self):
         """List all available account by name"""
 
         list_of_accounts = self.all_accounts()
@@ -537,12 +529,12 @@ class Password_Manager(object):
             warn_print("No account")
 
     @cmd("delete", "d")
-    def command_delete(self, index=None):
+    def _command_delete(self, index=None):
         """Delete account"""
         
-        account = self.ask_account_index(index)
+        account = self._ask_account_index(index)
 
-        if self.ask_confirmation("are you sure that you want to delete this account?"):
+        if self._ask_confirmation("are you sure that you want to delete this account?"):
             account.dump(show_values=self._show_values)
 
             account.remove()
@@ -551,9 +543,9 @@ class Password_Manager(object):
             info_print("Account deleted!")
 
     @cmd("clipboard", "c")
-    def command_clipboard(self, index=None, key=None):
+    def _command_clipboard(self, index=None, key=None):
         """Copy value to clipboard"""
-        account = self.ask_account_index(index)
+        account = self._ask_account_index(index)
         
         if key is None:
             num_keys = account.num_keys
@@ -577,11 +569,10 @@ class Password_Manager(object):
             warn_print("key not found!")
 
     @cmd("edit", "e")
-    def command_edit(self, index=None):
+    def _command_edit(self, index=None):
         """Edit account"""
 
-        account = self.ask_account_index(index)
-
+        account = self._ask_account_index(index)
 
         while True:
             print("")
@@ -634,15 +625,15 @@ class Password_Manager(object):
                 print("Invalid option: %s"%option)
 
     @cmd("rename")
-    def command_rename(self, index=None):
+    def _command_rename(self, index=None):
         """Rename account"""
 
-        account = self.ask_account_index(index)
+        account = self._ask_account_index(index)
         self._rename(account)
 
 
     @cmd("search", "f")
-    def command_search(self, account_pattern=None, show_values=None):
+    def _command_search(self, account_pattern=None, show_values=None):
         """Search account"""
 
         if account_pattern is None:
@@ -660,10 +651,10 @@ class Password_Manager(object):
 
 
     @cmd("print", "p")
-    def command_print(self, index=None, show_values=None):
+    def _command_print(self, index=None, show_values=None):
         """Print account"""
 
-        account = self.ask_account_index(index)
+        account = self._ask_account_index(index)
         if show_values is None:
             show_values = self._show_values
         else:
@@ -675,7 +666,7 @@ class Password_Manager(object):
 
 
     @cmd("print_all")
-    def command_print_all(self, show_values=None):
+    def _command_print_all(self, show_values=None):
         """Print all accounts"""
 
         if show_values is None:
@@ -690,13 +681,13 @@ class Password_Manager(object):
 
 
     @cmd("show", "s")
-    def command_show(self, index=None):
+    def _command_show(self, index=None):
         """Show all data of specific account"""
         self.command_print(index=index, show_values=True)
 
 
     @cmd("show_values")
-    def command_show_values(self):
+    def _command_show_values(self):
         """Show values"""
 
         self._show_values = True
@@ -704,7 +695,7 @@ class Password_Manager(object):
 
 
     @cmd("hide_values")
-    def command_hide_values(self):
+    def _command_hide_values(self):
         """Hide values"""
 
         self._show_values = False
@@ -713,17 +704,17 @@ class Password_Manager(object):
 
 
     @cmd("dump")
-    def command_dump(self):
+    def _command_dump(self):
         """Dump file content in plain text"""
         echo(json.dumps(self._root, indent=4))
 
     @cmd("help", "h")
-    def command_help(self):
+    def _command_help(self):
         """Print help"""
         print(self.HELP_MESSAGE)
 
     @cmd("clear")
-    def command_clear(self):
+    def _command_clear(self):
         """Clear screen"""
 
         clear_screen()
@@ -731,21 +722,19 @@ class Password_Manager(object):
 
 
     @cmd("exit")
-    def command_exit(self):
+    def _command_exit(self):
         """Exit"""
 
         exit()
 
-
     @cmd("random_pass")
-    def command_generate_password(self, password_length=10):
+    def _command_generate_password(self, password_length=10):
         """Generate random password"""
 
         password_length = int(password_length)
 
         letters = string.ascii_lowercase
         print ''.join(random.choice(letters) for i in range(password_length))
-
 
     def run(self):
         if os.path.isfile(self._filename):
