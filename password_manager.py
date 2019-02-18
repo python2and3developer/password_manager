@@ -3,6 +3,7 @@
 import sys
 import re
 import getpass
+import string
 import os
 import subprocess
 import platform
@@ -11,14 +12,21 @@ import itertools
 import shlex
 import hashlib
 import json
+import random
 
 import pyaes
+import pyperclip
 
 
 # TODO
 # Remove account
 # - Python 3 support
-# - To use pyperclip???
+# - Possibility to protect keys of accounts with a second password
+#    If a key is protected, a second password is required to print value or copy value to clipboard.
+# - Different cryptographic methods
+# - More personalization for the generation of random passwords
+# - Create key with random password
+# - Edit key with random password
 # - Consider these libraries:
 #       https://github.com/italorossi/ishell
 #       https://github.com/jonathanslenders/python-prompt-toolkit
@@ -27,6 +35,9 @@ import pyaes
 # Mirar esto:
 # https://stackoverflow.com/questions/42568262/how-to-encrypt-text-with-a-value-in-python/44212550
 #  hashlib.sha256("Nobody inspects the spammish repetition").hexdigest()
+
+
+PASSWORD_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 
 WHICH_CMD = 'which'
 CLIPBOARD_ENCODING = 'utf-8'
@@ -45,11 +56,8 @@ def get_boolean(c):
         elif show_values in LIST_OF_FALSE_VALUES:
             return False
 
-def echo(m, indent=0):
-    print("    "*indent + m)
 
-
-def _executable_exists(name):
+def executable_exists(name):
     return subprocess.call([WHICH_CMD, name],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE) == 0
 
@@ -80,72 +88,10 @@ class EncryptionException(PasswordManagerException):
     """Cannot encrypt data!"""
 
 
-class DecryptionException(PasswordManagerException):
-    """Cannot decrypt data!"""
 
-
-
-class XClip(object):
-    DEFAULT_SELECTION='c'
-    PRIMARY_SELECTION='p'
-
-    @classmethod
-    def copy(cls, text, primary=False):
-        if primary:
-            selection=cls.PRIMARY_SELECTION
-        else:
-            selection=cls.DEFAULT_SELECTION
-
-        p = subprocess.Popen(['xclip', '-selection', selection],
-                             stdin=subprocess.PIPE, close_fds=True)
-        p.communicate(input=text.encode(CLIPBOARD_ENCODING))
-
-    @classmethod
-    def paste(cls, primary=False):
-        if primary:
-            selection=cls.PRIMARY_SELECTION
-        else:
-            selection=cls.DEFAULT_SELECTION
-
-        p = subprocess.Popen(['xclip', '-selection', selection, '-o'],
-                             stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE,
-                             close_fds=True)
-        stdout, stderr = p.communicate()
-        # Intentionally ignore extraneous output on stderr when clipboard is empty
-        return stdout.decode(CLIPBOARD_ENCODING)
-
-
-class XSel(object):
-    DEFAULT_SELECTION='-b'
-    PRIMARY_SELECTION='-p'
-
-    @classmethod
-    def copy(cls, text, primary=False):
-        if primary:
-            selection_flag=cls.PRIMARY_SELECTION
-        else:
-            selection_flag=cls.DEFAULT_SELECTION
-
-        p = subprocess.Popen(['xsel', selection_flag, '-i'],
-                             stdin=subprocess.PIPE, close_fds=True)
-        p.communicate(input=text.encode(CLIPBOARD_ENCODING))
-
-    @classmethod
-    def paste(cls, primary=False):
-        if primary:
-            selection_flag=cls.PRIMARY_SELECTION
-        else:
-            selection_flag=cls.DEFAULT_SELECTION
-
-        p = subprocess.Popen(['xsel', selection_flag, '-o'],
-                             stdout=subprocess.PIPE, close_fds=True)
-        stdout, stderr = p.communicate()
-        return stdout.decode(CLIPBOARD_ENCODING)
 
 def clear_screen():
     os.system('reset')
-
 
 
 def warn_print(s):
@@ -159,17 +105,8 @@ def info_print(s):
 
 
 
-if _executable_exists("xclip"):
-    clipboard = XClip
-elif _executable_exists("xsel"):
-    clipboard = XSel
-else:
-    clipboard = None
-    warn_print("'xclip' or 'xsel' is not installed")
-
-def print_indented(text, indent="  "):
-    print("\n".join(indent+ l for l in text.splitlines()))
-
+def echo(text, indent=0, indent_char=" ", prefix=""):
+    print("\n".join(prefix + indent_char*indent + l for l in text.splitlines()))
 
 def decrypt(enc_data, password):  
     key_32 = hashlib.sha256(password).digest()
@@ -297,15 +234,21 @@ class Account(object):
 
         return Account(password_manager, account_element)
 
+    @property
+    def data(self):
+        return self.root["data"]
 
-    def dump(self, indent="  ", show_values=False):
-        account_element = self.root
 
-        name = account_element['account_name'].encode(sys.stdout.encoding)
-        print_indented("ACCOUNT NAME: {0}".format(name), indent=indent)
-        print_indented("DATA", indent=indent)
+    def dump(self, show_values=False, graph=False, prefix_name=""):
+        name = prefix_name + self.name.encode(sys.stdout.encoding)
+
+        if graph:
+            echo("|\n+ %s"%name)
+        else:
+            echo("ACCOUNT NAME: {0}".format(name))
+            echo("DATA")
         
-        for index, item_data in enumerate(account_element["data"]):
+        for index, item_data in enumerate(self.data):
             key = item_data["key"]
             key = key.encode(sys.stdout.encoding)
 
@@ -313,15 +256,84 @@ class Account(object):
                 value = item_data["value"]
                 value = value.encode(sys.stdout.encoding)
 
-                print_indented("  %d. %s: %s"%(index, key, value), indent=indent)
+                if graph:
+                    echo("+ %d. %s: %s"%(key, value), indent=4, prefix="|")
+                else:
+                    echo("%d. %s: %s"%(index, key, value), indent=4)
+
             else:
-                print_indented("  %d. %s"%(index, key), indent=indent)
+                if graph:
+                    echo("|\n+ %s"%key, indent=4, prefix="|")
+                else:
+                    echo("%d. %s"%(index, key), indent=4)
 
     def remove(self):
         self._password_manager._root["accounts"].remove(self.root)
 
 
+class Password_Manager_Meta(type):
+    def __new__(meta, name, bases, dct):
+        list_of_commands = meta.create_list_of_commands(dct)
+
+        dct["LIST_OF_COMMANDS"] = meta.create_list_of_command_names(list_of_commands)
+        dct["HELP_MESSAGE"] = meta.create_help(list_of_commands)
+
+        return super(Password_Manager_Meta, meta).__new__(meta, name, bases, dct)
+
+    @staticmethod
+    def create_list_of_commands(dct):
+        list_of_commands = []
+
+        for method_name in dct.keys():
+            method_function = dct[method_name]
+
+            if hasattr(method_function, "_cmd"):
+                list_of_commands.append((method_name, method_function))
+
+        return list_of_commands
+
+    @staticmethod
+    def create_list_of_command_names(command_methods):
+        LIST_OF_COMMANDS = {}
+
+        for method_name, method_function in command_methods:
+            command_names = method_function._cmd_name
+            for command_name in command_names:
+                if command_name in LIST_OF_COMMANDS:
+                    raise Exception("Repeated command: %s"%command_name)
+                else:
+                    LIST_OF_COMMANDS[command_name] = method_name
+
+        return LIST_OF_COMMANDS
+
+
+    @staticmethod
+    def create_help(command_methods):
+        HELP_MESSAGE = 'Available commands:\n'
+        commands_help = []
+
+        for method_name, method_function in command_methods:
+            command_names = method_function._cmd_name
+
+            if hasattr(method_function, "__doc__") and method_function.__doc__:
+                help_msg = method_function.__doc__.lower()
+            else:
+                help_msg = ""
+
+            commands_help.append((command_names, help_msg))
+
+        commands_help.sort(key=lambda x: x[0][0])
+
+        for command_names, help_string in commands_help:
+            HELP_MESSAGE += ", ".join(command_names).ljust(18) + help_string + "\n"
+
+        return HELP_MESSAGE
+
+
+
 class Password_Manager(object):
+    __metaclass__ = Password_Manager_Meta
+
     def __init__(self, filename, master_password=None, title="Password Manager"):
         self._filename = filename
         self._master_password = master_password
@@ -500,15 +512,6 @@ class Password_Manager(object):
         return decorator
 
 
-    @classmethod
-    def _command_methods(cls):
-        for method_name in cls.__dict__.keys():
-            method_function = cls.__dict__[method_name]
-
-            if hasattr(method_function, "_cmd"):
-                yield method_name, method_function
-
-
     @cmd("create")
     def command_create(self, account_name=None):
         """Create a new account"""
@@ -526,9 +529,9 @@ class Password_Manager(object):
         list_of_accounts = self.all_accounts()
 
         if list_of_accounts:
-            print_indented("List of accounts:")
+            echo("List of accounts:")
             for account_index, account in enumerate(list_of_accounts):
-                print_indented("%d. "%account_index + account.name)
+                echo("%d. "%account_index + account.name)
 
         else:
             warn_print("No account")
@@ -550,10 +553,6 @@ class Password_Manager(object):
     @cmd("clipboard", "c")
     def command_clipboard(self, index=None, key=None):
         """Copy value to clipboard"""
-        if not clipboard:
-            error_print("Not possible to use clipboard")
-            return
-
         account = self.ask_account_index(index)
         
         if key is None:
@@ -571,7 +570,7 @@ class Password_Manager(object):
             value = account.get_value_by_name(key)
 
         if value:
-            clipboard.copy(value)
+            pyperclip.copy(value)
 
             info_print("value copied to clipboard!")
         else:
@@ -642,7 +641,7 @@ class Password_Manager(object):
         self._rename(account)
 
 
-    @cmd("search")
+    @cmd("search", "f")
     def command_search(self, account_pattern=None, show_values=None):
         """Search account"""
 
@@ -686,14 +685,8 @@ class Password_Manager(object):
             if show_values is None:
                 raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
 
-        first = True
         for i, account in enumerate(self.all_accounts()):
-            print("%s. "%i)
-            account.dump(show_values=show_values)
-            if first:
-                first = False
-            else:
-                print("-"*40)
+            account.dump(show_values=show_values, graph=True, prefix_name="%d. "%i)
 
 
     @cmd("show", "s")
@@ -722,7 +715,7 @@ class Password_Manager(object):
     @cmd("dump")
     def command_dump(self):
         """Dump file content in plain text"""
-        print_indented(json.dumps(self._root, indent=4))
+        echo(json.dumps(self._root, indent=4))
 
     @cmd("help", "h")
     def command_help(self):
@@ -742,6 +735,17 @@ class Password_Manager(object):
         """Exit"""
 
         exit()
+
+
+    @cmd("random_pass")
+    def command_generate_password(self, password_length=10):
+        """Generate random password"""
+
+        password_length = int(password_length)
+
+        letters = string.ascii_lowercase
+        print ''.join(random.choice(letters) for i in range(password_length))
+
 
     def run(self):
         if os.path.isfile(self._filename):
@@ -835,52 +839,6 @@ class Password_Manager(object):
                     continue
             else:
                 error_print("Command not found!")
-
-
-
-def _create_list_of_commands():
-    LIST_OF_COMMANDS = {}
-
-    for method_name, method_function in Password_Manager._command_methods():
-        command_names = method_function._cmd_name
-        for command_name in command_names:
-            if command_name in LIST_OF_COMMANDS:
-                raise Exception("Repeated command: %s"%command_name)
-            else:
-                LIST_OF_COMMANDS[command_name] = method_name
-
-    return LIST_OF_COMMANDS
-
-
-Password_Manager.LIST_OF_COMMANDS = _create_list_of_commands()
-del _create_list_of_commands
-
-
-def _create_help():
-    HELP_MESSAGE = 'Available commands:\n'
-    commands_help = []
-
-    for method_name, method_function in Password_Manager._command_methods():
-        command_names = method_function._cmd_name
-
-        if hasattr(method_function, "__doc__"):
-            help_msg = method_function.__doc__.lower()
-        else:
-            help_msg = ""
-
-        commands_help.append((command_names, help_msg))
-
-
-    commands_help.sort(key=lambda x: x[0][0])
-
-    for command_names, help_string in commands_help:
-        HELP_MESSAGE += ", ".join(command_names).ljust(16) + help_string + "\n"
-
-    return HELP_MESSAGE
-
-
-Password_Manager.HELP_MESSAGE = _create_help()
-del _create_help
 
 
 if __name__ == "__main__":
