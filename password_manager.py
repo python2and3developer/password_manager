@@ -19,7 +19,6 @@ import pyperclip
 
 
 # TODO
-# Remove account
 # - Python 3 support
 # - Possibility to protect keys of accounts with a second password
 #    If a key is protected, a second password is required to print value or copy value to clipboard.
@@ -631,7 +630,6 @@ class Password_Manager(object):
         account = self._ask_account_index(index)
         self._rename(account)
 
-
     @cmd("search", "f")
     def _command_search(self, account_pattern=None, show_values=None):
         """Search account"""
@@ -649,7 +647,6 @@ class Password_Manager(object):
         else:
             account.dump(show_values=self._show_values)
 
-
     @cmd("print", "p")
     def _command_print(self, index=None, show_values=None):
         """Print account"""
@@ -663,7 +660,6 @@ class Password_Manager(object):
                 raise PasswordManagerException("Not valid 'show_values' parameter: %s"%show_values)
 
         account.dump(show_values=show_values)
-
 
     @cmd("print_all")
     def _command_print_all(self, show_values=None):
@@ -679,12 +675,10 @@ class Password_Manager(object):
         for i, account in enumerate(self.all_accounts()):
             account.dump(show_values=show_values, graph=True, prefix_name="%d. "%i)
 
-
     @cmd("show", "s")
     def _command_show(self, index=None):
         """Show all data of specific account"""
         self.command_print(index=index, show_values=True)
-
 
     @cmd("show_values")
     def _command_show_values(self):
@@ -693,7 +687,6 @@ class Password_Manager(object):
         self._show_values = True
         print("All values will be shown now!")
 
-
     @cmd("hide_values")
     def _command_hide_values(self):
         """Hide values"""
@@ -701,7 +694,6 @@ class Password_Manager(object):
         self._show_values = False
 
         print("All values will be hidden now!")
-
 
     @cmd("dump")
     def _command_dump(self):
@@ -719,7 +711,6 @@ class Password_Manager(object):
 
         clear_screen()
         print(self.HELP_MESSAGE)
-
 
     @cmd("exit")
     def _command_exit(self):
@@ -784,11 +775,8 @@ class Password_Manager(object):
 
         clear_screen()
 
-        header = "-"*len(self._title) + "\n" + self._title + "\n" + "-"*len(self._title) + "\n"
+        header = "-"*len(self._title) + "\n" + self._title + "\n" + "-"*len(self._title) + "\n\n" + self.HELP_MESSAGE
         print(header)
-
-
-        print(self.HELP_MESSAGE)
 
         list_of_accounts = self.all_accounts()
 
