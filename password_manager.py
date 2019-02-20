@@ -87,8 +87,13 @@ class EncryptionException(PasswordManagerException):
     """Cannot encrypt data!"""
 
 
-def clear_screen():
-    os.system('reset')
+# https://stackoverflow.com/questions/1854/python-what-os-am-i-running-on
+if platform.system() == "Windows":
+    def clear_screen():
+        os.system('cls')
+else:
+    def clear_screen():
+        os.system('reset')
 
 
 def warn_print(s):
@@ -724,6 +729,8 @@ class Password_Manager(object):
     def _command_exit(self):
         """Exit"""
 
+        print "hola"
+        clear_screen()
         exit()
 
     @cmd("random_pass")
