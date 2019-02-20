@@ -130,6 +130,10 @@ class Account(object):
         self.root = root
         self._password_manager = password_manager
 
+    @property
+    def is_private(self):
+        return "private" in self.root and self.root["private"]
+
     def save(self):
         self._password_manager.save_accounts()
 
@@ -234,7 +238,7 @@ class Account(object):
 
         return Account(password_manager, account_element)
 
-    def dump(self, show_values=False, graph=False, prefix_name=""):
+    def dump(self, show_values=False, graph=False, prefix_name="", password=None):
         name = prefix_name + self.name.encode(sys.stdout.encoding)
 
         if graph:
@@ -242,13 +246,17 @@ class Account(object):
         else:
             echo("ACCOUNT NAME: {0}".format(name))
             echo("DATA")
+
         
         for index, item_data in enumerate(self.data):
             key = item_data["key"]
             key = key.encode(sys.stdout.encoding)
 
-            if show_values:
+            if show_values and (not self.is_private or (self.is_private and password is not None)):
                 value = item_data["value"]
+                if password:
+                    value = decrypt(value, password)
+
                 value = value.encode(sys.stdout.encoding)
 
                 if graph:
@@ -678,7 +686,7 @@ class Password_Manager(object):
     @cmd("show", "s")
     def _command_show(self, index=None):
         """Show all data of specific account"""
-        self.command_print(index=index, show_values=True)
+        self._command_print(index=index, show_values=True)
 
     @cmd("show_values")
     def _command_show_values(self):
