@@ -18,12 +18,12 @@ create            create a new account
 delete, d         delete account
 dump              dump file content in plain text
 edit, e           edit account
-exit, q           exit
 help, h           print help
 hide_values       hide values
 list, l           list all available account by name
 print, p          print account
 print_all         print all accounts
+quit, q           quit
 random_pass       generate random password
 rename            rename account
 search, f         search account

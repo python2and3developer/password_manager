@@ -771,9 +771,9 @@ class Password_Manager(object):
         clear_screen()
         print(self.HELP_MESSAGE)
 
-    @cmd("exit", "q")
+    @cmd("quit", "q")
     def _command_exit(self):
-        """Exit"""
+        """Quit"""
 
         clear_screen()
         exit()
