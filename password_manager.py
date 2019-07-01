@@ -583,7 +583,7 @@ class Password_Manager(object):
     @cmd("list", "l")
     def _command_list(self):
         """List all available account by name"""
-        self._print_all_acounts()
+        self._print_all_accounts()
 
 
     @cmd("delete", "d")
