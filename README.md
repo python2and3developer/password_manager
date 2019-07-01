@@ -1,7 +1,7 @@
 # Password Manager
 Password manager for the terminal using gnugpg.
 
-Python2 is required.
+Python 2 is required.
 
 
 ## Installation
@@ -20,7 +20,7 @@ create            create a new account
 delete, d         delete account
 dump              dump file content in plain text
 edit, e           edit account
-exit              exit
+exit, q           exit
 help, h           print help
 hide_values       hide values
 list, l           list all available account by name
