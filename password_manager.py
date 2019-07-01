@@ -13,6 +13,8 @@ import shlex
 import hashlib
 import json
 import random
+import inspect
+import datetime
 
 import pyaes
 import pyperclip
@@ -21,16 +23,19 @@ import pyperclip
 # TODO
 # - Python 3 support
 # - Possibility to protect keys of accounts with a second password
+# - Command to show data of only specific account and key
 #    If a key is protected, a second password is required to print value or copy value to clipboard.
+#    A key is protected if it contains the attribute 'protected' or 'encrypted' to True
 # - Different cryptographic methods
+# - If defined the environment variable EDITOR_FOR_PASSWORD_MANAGER, then all editions will be done using your that editor and saving intermediate results in temporal documents.
 # - More personalization for the generation of random passwords
 # - Create key with random password
 # - Edit key with random password
+# - Add creation and modification timestamps for accounts and keys of accounts
 # - Consider these libraries:
 #       https://github.com/italorossi/ishell
 #       https://github.com/jonathanslenders/python-prompt-toolkit
 # Print and ask copy to clipboard
-# To use module in pure python for symmetric encription instead of gnugpg
 # Mirar esto:
 # https://stackoverflow.com/questions/42568262/how-to-encrypt-text-with-a-value-in-python/44212550
 #  hashlib.sha256("Nobody inspects the spammish repetition").hexdigest()
@@ -38,11 +43,12 @@ import pyperclip
 
 PASSWORD_CHARS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 
-WHICH_CMD = 'which'
 CLIPBOARD_ENCODING = 'utf-8'
 
 LIST_OF_TRUE_VALUES = ["y", "yes", "1", "on"]
 LIST_OF_FALSE_VALUES = ["n", "no", "0", "off"]
+
+SIGNATURE = 'Ps54kNc8ZnUqWgxZ'
 
 
 def get_boolean(c):
@@ -56,9 +62,37 @@ def get_boolean(c):
             return False
 
 
+def create_timestamp():
+    return datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S %Z %Y")
+
+
+def generate_password(password_length):
+    letters = string.ascii_lowercase
+    password = ''.join(random.choice(letters) for i in range(password_length))
+
+    return password
+
+
+def which(program):
+    import os
+    def is_exe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    else:
+        for path in os.environ["PATH"].split(os.pathsep):
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+
+    return None
+
+
 def executable_exists(name):
-    return subprocess.call([WHICH_CMD, name],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE) == 0
+    return which(name) is not None
 
 
 class PasswordManagerException(Exception):
@@ -71,6 +105,9 @@ class PasswordManagerException(Exception):
         else:
             return self.__doc__
 
+
+class BadArguments(PasswordManagerException):
+    """Bad arguments passed to command"""
 
 class AccountNotFoundException(PasswordManagerException):
     """Account not found"""
@@ -110,6 +147,7 @@ def info_print(s):
 def echo(text, indent=0, indent_char=" ", prefix=""):
     print("\n".join(prefix + indent_char*indent + l for l in text.splitlines()))
 
+
 def decrypt(enc_data, password):  
     key_32 = hashlib.sha256(password).digest()
 
@@ -118,7 +156,6 @@ def decrypt(enc_data, password):
     dec_data = dec_data.decode("utf-8")
 
     return dec_data
-
 
 
 def encrypt(dec_data, password):
@@ -352,6 +389,8 @@ class Password_Manager_Meta(type):
 
 class Password_Manager(object):
     __metaclass__ = Password_Manager_Meta
+    #PROMPT = "Command:"
+    PROMPT = ">"
 
     def __init__(self, filename, master_password=None, title="Password Manager"):
         self._filename = filename
@@ -371,9 +410,25 @@ class Password_Manager(object):
         return list_of_accounts
 
     def save_accounts(self):
+        modification_date = create_timestamp()
+        self._root["last_modification"] = modification_date
+        self._root["password_manager"] = SIGNATURE
+
         encrypted_data = encrypt(json.dumps(self._root), self._master_password)
         with open(self._filename, "wb") as f:
             f.write(encrypted_data)
+
+
+    def _print_all_accounts(self):
+        list_of_accounts = self.all_accounts()
+
+        if list_of_accounts:
+            echo("List of accounts:")
+            for account_index, account in enumerate(list_of_accounts):
+                echo("%d. "%account_index + account.name)
+
+        else:
+            warn_print("No account")
 
     def _ask_hidden_value(self, key_name, old_value=None):
         while True:
@@ -525,20 +580,11 @@ class Password_Manager(object):
 
         info_print("Account added!")
 
-
     @cmd("list", "l")
     def _command_list(self):
         """List all available account by name"""
+        self._print_all_acounts()
 
-        list_of_accounts = self.all_accounts()
-
-        if list_of_accounts:
-            echo("List of accounts:")
-            for account_index, account in enumerate(list_of_accounts):
-                echo("%d. "%account_index + account.name)
-
-        else:
-            warn_print("No account")
 
     @cmd("delete", "d")
     def _command_delete(self, index=None):
@@ -546,7 +592,7 @@ class Password_Manager(object):
         
         account = self._ask_account_index(index)
 
-        if self._ask_confirmation("are you sure that you want to delete this account?"):
+        if self._ask_confirmation("are you sure that you want to delete this account '%s'?"%account.name):
             account.dump(show_values=self._show_values)
 
             account.remove()
@@ -725,11 +771,10 @@ class Password_Manager(object):
         clear_screen()
         print(self.HELP_MESSAGE)
 
-    @cmd("exit")
+    @cmd("exit", "q")
     def _command_exit(self):
         """Exit"""
 
-        print "hola"
         clear_screen()
         exit()
 
@@ -739,8 +784,8 @@ class Password_Manager(object):
 
         password_length = int(password_length)
 
-        letters = string.ascii_lowercase
-        print ''.join(random.choice(letters) for i in range(password_length))
+        password = generate_password(password_length)
+        print(password)
 
     def run(self):
         if os.path.isfile(self._filename):
@@ -771,7 +816,15 @@ class Password_Manager(object):
                     return
 
                 self._master_password = master_password
-            self._root = {"accounts": []}
+
+
+            creation_date = create_timestamp()
+            self._root = {
+                "accounts": [],
+                "password_manager": SIGNATURE,
+                "creation_date": creation_date,
+                "last_modification": creation_date
+            }
 
             self.save_accounts()
         else:
@@ -782,27 +835,32 @@ class Password_Manager(object):
 
             try:
                 root = decrypt(enc_data, self._master_password)
-            except DecryptionException as e:
-                error_print("Error doing decryption:\n%s"%str(e))
+            except ValueError:
+                error_print("Wrong Password")
                 return
            
-            self._root = json.loads(root)
+            try:
+                self._root = json.loads(root)
+            except ValueError:
+                error_print("Wrong Password")
+                return
+
+            if "password_manager" not in self._root or self._root["password_manager"] != SIGNATURE:
+                error_print("Wrong Password")
+                return               
 
         clear_screen()
 
         header = "-"*len(self._title) + "\n" + self._title + "\n" + "-"*len(self._title) + "\n\n" + self.HELP_MESSAGE
         print(header)
 
-        list_of_accounts = self.all_accounts()
+        self._print_all_accounts()
+        print("\nPlease enter a command.")
 
-        if list_of_accounts:
-            print("List of accounts:")
-            for account_index, account in enumerate(list_of_accounts):
-                print("%d. "%account_index + account.name)
 
         while True:
             try:
-                user_input = raw_input("\n\nCommand: ")
+                user_input = raw_input("\n%s "%self.PROMPT)
             except KeyboardInterrupt:
                 return
 
@@ -823,6 +881,22 @@ class Password_Manager(object):
                     else:
                         args.append(t)
 
+                func_args = inspect.getargspec(command_function).args[1:]
+
+                try:
+                    if len(args) > len(func_args):
+                        raise BadArguments
+
+                    func_args = func_args[len(args):]
+
+                    for kw in kwargs:
+                        if kw not in func_args:
+                            raise BadArguments
+
+                except BadArguments:
+                    error_print("Bad arguments")
+                    continue
+
                 try:
                     command_function(*args, **kwargs)
                 except PasswordManagerException as e:
@@ -832,6 +906,7 @@ class Password_Manager(object):
             else:
                 error_print("Command not found!")
 
+            print("\n")
 
 if __name__ == "__main__":
     import argparse
@@ -840,6 +915,5 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     filename = args.filename
-
 
     Password_Manager(filename).run()

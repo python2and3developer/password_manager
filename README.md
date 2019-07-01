@@ -1,6 +1,4 @@
 # Password Manager
-Password manager for the terminal using gnugpg.
-
 Python 2 is required.
 
 
