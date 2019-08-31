@@ -120,6 +120,10 @@ class AccountKeyIndexException(PasswordManagerException):
     """Invalid index key in account"""
 
 
+class AccountIsRemovedException(PasswordManagerException):
+    """Account is already removed. Not possible to do more operations"""
+
+
 class EncryptionException(PasswordManagerException):
     """Cannot encrypt data!"""
 
@@ -167,16 +171,30 @@ def encrypt(dec_data, password):
     return enc_data
 
 
+def check_if_account_is_removed(func):
+    def wrapper(self, *args, **kwargs):
+        if self._is_removed:
+            raise AccountIsRemovedException
+        return func(self, *args, **kwargs)
+    return wrapper
+
+
 class Account(object):
     def __init__(self, password_manager, root):
         self.root = root
         self._password_manager = password_manager
 
+        self._is_removed = False
+
     @property
     def is_private(self):
         return "private" in self.root and self.root["private"]
 
+    @check_if_account_is_removed
     def save(self):
+        last_modification = create_timestamp()
+        self.root["last_modification"] = last_modification
+
         self._password_manager.save_accounts()
 
     def _check_index(self, index):
@@ -224,6 +242,15 @@ class Account(object):
             "value": value
         })
 
+    def add_random_password_key(self, key, password_length=10):
+        key = self._normalize_key_name(key)
+        value = generate_password(password_length)
+
+        self.root["data"].append({
+            "key": key,
+            "value": value
+        })
+
     def get_value_by_name(self, key):
         key = self._normalize_key_name(key)
         for item_data in self.root["data"]:
@@ -236,7 +263,7 @@ class Account(object):
 
     @name.setter
     def name(self, account_name):
-        account_name = self._normalize_name(account_name)
+        account_name = self._normalize_account_name(account_name)
         self.root["account_name"] = account_name
 
     @property
@@ -244,7 +271,7 @@ class Account(object):
         return self.root["data"]
 
     @staticmethod
-    def _normalize_name(account_name):
+    def _normalize_account_name(account_name):
         account_name = " ".join(account_name.lower().strip().split())
         account_name = account_name.replace("*", "")
         account_name = account_name.replace("?", "")
@@ -263,7 +290,7 @@ class Account(object):
 
     @classmethod
     def create_account(cls, password_manager, account_name, keys):
-        account_name = cls._normalize_name(account_name)
+        account_name = cls._normalize_account_name(account_name)
 
         account_element = {'account_name': account_name, "data":[]}
 
@@ -314,7 +341,9 @@ class Account(object):
 
     def remove(self):
         self._password_manager._root["accounts"].remove(self.root)
+        self._password_manager.save_accounts()
 
+        self._is_removed = True
 
 def cmd(*args):
     def decorator(f):
@@ -330,15 +359,15 @@ def cmd(*args):
 
 class Password_Manager_Meta(type):
     def __new__(meta, name, bases, dct):
-        list_of_commands = meta.create_list_of_commands(dct)
+        list_of_commands = meta._create_list_of_commands(dct)
 
-        dct["LIST_OF_COMMANDS"] = meta.create_list_of_command_names(list_of_commands)
-        dct["HELP_MESSAGE"] = meta.create_help(list_of_commands)
+        dct["LIST_OF_COMMANDS"] = meta._create_list_of_command_names(list_of_commands)
+        dct["HELP_MESSAGE"] = meta._create_help(list_of_commands)
 
         return super(Password_Manager_Meta, meta).__new__(meta, name, bases, dct)
 
     @staticmethod
-    def create_list_of_commands(dct):
+    def _create_list_of_commands(dct):
         list_of_commands = []
 
         for method_name in dct.keys():
@@ -350,7 +379,7 @@ class Password_Manager_Meta(type):
         return list_of_commands
 
     @staticmethod
-    def create_list_of_command_names(command_methods):
+    def _create_list_of_command_names(command_methods):
         LIST_OF_COMMANDS = {}
 
         for method_name, method_function in command_methods:
@@ -364,7 +393,7 @@ class Password_Manager_Meta(type):
         return LIST_OF_COMMANDS
 
     @staticmethod
-    def create_help(command_methods):
+    def _create_help(command_methods):
         HELP_MESSAGE = 'Available commands:\n'
         commands_help = []
 
@@ -449,12 +478,15 @@ class Password_Manager(object):
                 warn_print("values don't coincide")
 
     def _ask_confirmation(self, msg):
-        answer = raw_input(msg + " Answer 'y' to confirm...\n").strip().lower()
 
-        if answer == "y":
-            return True
-        else:
-            return False
+        while True:
+            answer = raw_input(msg + " Answer 'y' to confirm...\n").strip().lower()
+
+            if answer in ("y", "yes"):
+                return True
+            elif answer in ("n", "no", ""):
+                return False
+
 
     def _ask_account_index(self, index=None):
         if index is None:
@@ -478,7 +510,7 @@ class Password_Manager(object):
                 return list_of_accounts[index]
 
     def find_account(self, pattern):
-        account = find_account_by_index(pattern)
+        account = self.find_account_by_index(pattern)
         if account:
             return account
 
@@ -511,7 +543,7 @@ class Password_Manager(object):
                 if re.search(pattern, account.name, flags=re.I):
                     return account
         else:
-            pattern = Account.normalize_name(pattern)
+            pattern = Account._normalize_account_name(pattern)
 
             for account in self.all_accounts():
                 if pattern == account.name:
@@ -530,12 +562,15 @@ class Password_Manager(object):
 
             if account_name == "": return
 
+            account_name = account_name.decode(sys.stdin.encoding)
+
         keys = {}
 
         while True:
             if not self._ask_confirmation("Do you want to create a key?"): break
 
             key = raw_input("\nKey: ")
+            key = key.decode(sys.stdin.encoding)
 
             print("Value: ")
 
@@ -563,9 +598,10 @@ class Password_Manager(object):
         return account
 
     def _rename(self, account):
-        new_account_name = raw_input("New name for account: ")
+        account_name = raw_input("New name for account: ")
+        account_name = account_name.decode(sys.stdin.encoding)
 
-        account.name = new_account_name
+        account.name = account_name
         account.save()
 
         info_print("Account successfully renamed!")        
@@ -596,7 +632,6 @@ class Password_Manager(object):
             account.dump(show_values=self._show_values)
 
             account.remove()
-            self.save_accounts()
 
             info_print("Account deleted!")
 
@@ -641,8 +676,9 @@ class Password_Manager(object):
             print("  2. Edit value")
             print("  3. Delete key")
             print("  4. Add key")
-            print("  5. Rename account")
-            print("  6. Exit")
+            print("  5. Add key with random password")
+            print("  6. Rename account")
+            print("  7. Exit")
 
             option = raw_input()
             option = option.strip()
@@ -650,35 +686,64 @@ class Password_Manager(object):
 
             if option == "1":
                 index = raw_input("Key index: ")
+                index = index.decode(sys.stdin.encoding)
+
                 key = raw_input("Key [%s]: "%account.get_key(index)["key"])
+                key = key.decode(sys.stdin.encoding)
                 
                 account.set_key(index, key=key)
-                self.save_accounts()
+                account.save()
                 
             elif option == "2":
                 index = raw_input("Key index: ")
+                index = index.decode(sys.stdin.encoding)
+
                 value = raw_input("Value [%s]: "%account.get_key(index)["value"])
+                value = value.decode(sys.stdin.encoding)
                 
                 account.set_key(index, value=value)
                 account.save()
                 
             elif option == "3":
                 index = raw_input("Key index: ")
+                index = index.decode(sys.stdin.encoding)
+
                 account.del_key(index)
                 account.save()
 
             elif option == "4":
                 key = raw_input("Key: ")
+                key = key.decode(sys.stdin.encoding)
+
                 value = raw_input("Value: ")
+                value = value.decode(sys.stdin.encoding)
 
                 account.add_key(key, value)
                 account.save()
 
             elif option == "5":
-                self._rename(account)
+                key = raw_input("Key: ")
+                key = key.decode(sys.stdin.encoding)
+
+                password_length = raw_input("Password length: ")
+                password_length = password_length.decode(sys.stdin.encoding)
+
+                password_length = password_length.strip()
+
+                try:
+                    password_length = int(password_length)
+                except ValueError:
+                    raise PasswordManagerException("Password length is not integer")
+
+                account.add_random_password_key(key, password_length=password_length)
+                account.save()
 
             elif option == "6":
+                self._rename(account)
+
+            elif option == "7":
                 break
+
             else:
                 print("Invalid option: %s"%option)
 
@@ -689,18 +754,19 @@ class Password_Manager(object):
         account = self._ask_account_index(index)
         self._rename(account)
 
-    @cmd("search", "f")
-    def _command_search(self, account_pattern=None, show_values=None):
-        """Search account"""
+    @cmd("find", "f")
+    def _command_find(self, account_pattern=None, show_values=None):
+        """Find account"""
 
         if account_pattern is None:
             account_pattern = raw_input("Write an account pattern: ")
             account_pattern = account_pattern.strip()
 
             if account_pattern == "": return
+            
+            account_pattern = account_pattern.decode(sys.stdin.encoding)
 
-
-        account = self.find_account(pattern)
+        account = self.find_account(account_pattern)
         if account is None:
             raise AccountNotFoundException
         else:
